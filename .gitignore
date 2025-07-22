@@ -1,1 +1,155 @@
+# Mermaid diagrams
 mermaid*
+
+# Sensitive Information
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+vault_pass.txt
+vault.yml
+*vault*
+.vault_pass
+
+# Ansible specific
+*.retry
+.ansible/
+ansible.log
+*.pyc
+__pycache__/
+
+# SSH Keys and Certificates
+id_rsa*
+id_ed25519*
+*.pub
+known_hosts
+authorized_keys
+
+# VM and Hypervisor files
+*.vmx
+*.vmdk
+*.vdi
+*.vbox
+*.ova
+*.ovf
+*.iso
+*.qcow2
+*.vhd
+*.vhdx
+Vagrantfile.local
+.vagrant/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*~
+.#*
+#*#
+
+# Log files
+*.log
+logs/
+*.out
+*.err
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE and Editor files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Environment and configuration overrides
+.env
+.env.local
+.env.production
+local_settings.py
+config.local.yml
+inventory.local.yml
+
+# Downloaded packages and installers
+*.deb
+*.rpm
+*.msi
+*.exe
+*.dmg
+downloads/
+packages/
+
+# Attack simulation artifacts
+attack-logs/
+exploit-db/
+payloads/
+shells/
+*.pcap
+*.cap
+
+# Wazuh specific
+ossec.log
+alerts.log
+archives.log
+firewall.log
+active-responses.log
+
+# Database dumps and exports
+*.sql
+*.dump
+*.db
+*.sqlite
+*.sqlite3
+
+# Documentation builds
+_build/
+build/
+dist/
+site/
+.mkdocs/
+
+# Python virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Terraform (if used for cloud deployment)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes (if used)
+kubeconfig
+*.kubeconfig
+kube-config
+
+# Custom lab configurations (environment-specific)
+lab.local.yml
+custom-rules/
+custom-dashboards/
+lab-specific/

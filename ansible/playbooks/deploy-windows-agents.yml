@@ -1,0 +1,179 @@
+---
+# Deploy Wazuh agents on Windows systems
+
+- name: Deploy Wazuh Agents on Windows Systems
+  hosts: windows_agents
+  gather_facts: true
+
+  vars:
+    wazuh_agent_msi_url: "https://packages.wazuh.com/4.x/windows/wazuh-agent-{{ wazuh_agent.version }}-1.msi"
+    wazuh_agent_installer: "C:\\temp\\wazuh-agent-{{ wazuh_agent.version }}-1.msi"
+
+  tasks:
+    - name: Display target system information
+      debug:
+        msg: |
+          Deploying Wazuh agent on: {{ inventory_hostname }}
+          OS: {{ ansible_os_name }}
+          IP Address: {{ ansible_ip_addresses[0] }}
+          Agent Name: {{ wazuh_agent_name }}
+          Agent Groups: {{ wazuh_agent_groups | join(', ') }}
+
+    - name: Create temporary directory
+      win_file:
+        path: C:\temp
+        state: directory
+
+    - name: Download Wazuh agent installer
+      win_get_url:
+        url: "{{ wazuh_agent_msi_url }}"
+        dest: "{{ wazuh_agent_installer }}"
+        timeout: 300
+      register: download_result
+
+    - name: Install Wazuh agent
+      win_package:
+        path: "{{ wazuh_agent_installer }}"
+        product_id: "Wazuh Agent"
+        arguments:
+          - /quiet
+          - WAZUH_MANAGER="{{ wazuh_manager_ip }}"
+          - WAZUH_REGISTRATION_SERVER="{{ wazuh_manager_ip }}"
+          - WAZUH_AGENT_GROUP="{{ wazuh_agent_groups | join(',') }}"
+          - WAZUH_AGENT_NAME="{{ wazuh_agent_name }}"
+        state: present
+      register: install_result
+
+    - name: Configure Wazuh agent
+      win_template:
+        src: "../configs/wazuh/ossec-agent-windows.conf.j2"
+        dest: "{{ wazuh_agent_windows.config_file }}"
+        backup: true
+      notify: restart wazuh agent service
+
+    - name: Register agent with manager
+      win_shell: |
+        & "{{ wazuh_agent_windows.install_dir }}\agent-auth.exe" -m {{ wazuh_manager_ip }} -P {{ wazuh_agent_auth_password }} -G {{ wazuh_agent_groups | join(',') }} -A {{ wazuh_agent_name }}
+      register: agent_registration
+      failed_when: agent_registration.rc != 0 and "already registered" not in agent_registration.stderr
+
+    - name: Display registration result
+      debug:
+        var: agent_registration.stdout
+      when: agent_registration.stdout is defined
+
+    - name: Configure Windows Firewall rules for Wazuh
+      win_firewall_rule:
+        name: "{{ item.name }}"
+        direction: "{{ item.direction }}"
+        action: "{{ item.action }}"
+        protocol: "{{ item.protocol }}"
+        remoteport: "{{ item.remote_port }}"
+        remoteip: "{{ item.remote_address }}"
+        state: present
+        enabled: true
+      loop: "{{ windows_firewall.rules }}"
+
+    - name: Enable Wazuh agent service
+      win_service:
+        name: "{{ wazuh_agent_windows.service_name }}"
+        state: started
+        start_mode: auto
+
+    # Domain Controller specific configuration
+    - name: Configure Active Directory monitoring (Domain Controllers)
+      win_lineinfile:
+        path: "{{ wazuh_agent_windows.config_file }}"
+        insertafter: "</ossec_config>"
+        line: |
+          <!-- Active Directory Monitoring -->
+          <localfile>
+            <location>Microsoft-Windows-ActiveDirectory_DomainService/Operational</location>
+            <log_format>eventchannel</log_format>
+          </localfile>
+          <localfile>
+            <location>Directory Service</location>
+            <log_format>eventlog</log_format>
+          </localfile>
+        state: present
+      when: "'domain_controller' in wazuh_agent_groups"
+      notify: restart wazuh agent service
+
+    - name: Configure PowerShell logging
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging
+        name: EnableModuleLogging
+        data: 1
+        type: dword
+        state: present
+
+    - name: Enable PowerShell script block logging
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
+        name: EnableScriptBlockLogging
+        data: 1
+        type: dword
+        state: present
+
+    - name: Configure Windows Event Log retention
+      win_shell: |
+        wevtutil sl Security /ms:{{ 1024 * 1024 * 100 }}
+        wevtutil sl System /ms:{{ 1024 * 1024 * 50 }}
+        wevtutil sl Application /ms:{{ 1024 * 1024 * 50 }}
+      register: eventlog_config
+
+    - name: Create scheduled task for agent health check
+      win_scheduled_task:
+        name: "{{ item.name }}"
+        description: "Monitor Wazuh agent service health"
+        actions:
+          - path: powershell.exe
+            arguments: "{{ item.command }}"
+        triggers:
+          - type: time
+            repetition:
+              interval: "PT{{ item.modifier }}M"
+        username: SYSTEM
+        state: present
+        enabled: true
+      loop: "{{ windows_scheduled_tasks }}"
+
+    - name: Install Sysmon (optional for enhanced logging)
+      block:
+        - name: Download Sysmon
+          win_get_url:
+            url: "https://download.sysinternals.com/files/Sysmon.zip"
+            dest: "C:\\temp\\Sysmon.zip"
+
+        - name: Extract Sysmon
+          win_unzip:
+            src: "C:\\temp\\Sysmon.zip"
+            dest: "C:\\temp\\Sysmon"
+
+        - name: Install Sysmon with configuration
+          win_shell: |
+            C:\temp\Sysmon\Sysmon64.exe -accepteula -i
+          register: sysmon_install
+          failed_when: sysmon_install.rc != 0 and "already installed" not in sysmon_install.stderr
+      when: install_sysmon | default(false)
+
+    - name: Verify agent status
+      win_shell: |
+        & "{{ wazuh_agent_windows.install_dir }}\wazuh-control.bat" status
+      register: agent_status
+      changed_when: false
+
+    - name: Display agent status
+      debug:
+        var: agent_status.stdout_lines
+
+    - name: Clean up installer
+      win_file:
+        path: "{{ wazuh_agent_installer }}"
+        state: absent
+
+  handlers:
+    - name: restart wazuh agent service
+      win_service:
+        name: "{{ wazuh_agent_windows.service_name }}"
+        state: restarted

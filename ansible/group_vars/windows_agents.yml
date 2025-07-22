@@ -1,0 +1,120 @@
+---
+# Windows-specific configuration for Wazuh agents
+
+# Wazuh Agent Windows Configuration
+wazuh_agent_windows:
+  install_dir: "C:\\Program Files (x86)\\ossec-agent"
+  config_file: "C:\\Program Files (x86)\\ossec-agent\\ossec.conf"
+  log_file: "C:\\Program Files (x86)\\ossec-agent\\ossec.log"
+  service_name: "WazuhSvc"
+
+# Windows Event Log monitoring
+windows_eventlog:
+  channels:
+    - name: "Security"
+      query: "*"
+    - name: "System"
+      query: "*"
+    - name: "Application"
+      query: "*"
+    - name: "Microsoft-Windows-PowerShell/Operational"
+      query: "*"
+    - name: "Microsoft-Windows-Sysmon/Operational"
+      query: "*"
+    - name: "Directory Service"
+      query: "*"
+    - name: "DNS Server"
+      query: "*"
+
+# File Integrity Monitoring for Windows
+windows_fim:
+  directories:
+    - "C:\\Windows\\System32"
+    - "C:\\Windows\\SysWOW64"
+    - "C:\\Program Files"
+    - "C:\\Program Files (x86)"
+    - "C:\\Users\\Administrator\\Desktop"
+    - "C:\\Windows\\System32\\drivers\\etc"
+
+  registry_keys:
+    - "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+    - "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+    - "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services"
+    - "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+
+# Windows security monitoring
+windows_security:
+  monitor_processes: true
+  monitor_network: true
+  monitor_registry: true
+  monitor_services: true
+
+# Active Directory monitoring (for Domain Controllers)
+active_directory:
+  monitor_logons: true
+  monitor_group_changes: true
+  monitor_user_changes: true
+  monitor_policy_changes: true
+  monitor_privilege_use: true
+
+# Windows Firewall configuration
+windows_firewall:
+  rules:
+    - name: "Wazuh Agent Outbound"
+      direction: "out"
+      action: "allow"
+      protocol: "TCP"
+      remote_port: "1514"
+      remote_address: "{{ wazuh_manager_ip }}"
+    - name: "Wazuh Registration Outbound"
+      direction: "out"
+      action: "allow"
+      protocol: "TCP"
+      remote_port: "1515"
+      remote_address: "{{ wazuh_manager_ip }}"
+
+# Performance monitoring
+windows_performance:
+  max_events_per_second: 1000
+  queue_size: 32768
+
+# Custom Windows rules
+windows_custom_rules:
+  - rule_id: 100101
+    description: "Windows logon failure"
+    event_id: 4625
+    frequency: 5
+    timeframe: 300
+
+  - rule_id: 100102
+    description: "New service installed"
+    event_id: 7045
+    frequency: 1
+    timeframe: 60
+
+  - rule_id: 100103
+    description: "PowerShell execution detected"
+    event_id: 4103
+    frequency: 1
+    timeframe: 60
+
+# Scheduled tasks
+windows_scheduled_tasks:
+  - name: "Wazuh Agent Health Check"
+    command: 'powershell.exe -Command "if ((Get-Service WazuhSvc).Status -ne \"Running\") { Start-Service WazuhSvc }"'
+    schedule: "MINUTE"
+    modifier: 5
+
+# Windows updates
+windows_updates:
+  auto_update: false
+  reboot_required: false
+  categories:
+    - "SecurityUpdates"
+    - "CriticalUpdates"
+
+# PowerShell configuration
+powershell_config:
+  execution_policy: "RemoteSigned"
+  enable_logging: true
+  log_level: "Verbose"

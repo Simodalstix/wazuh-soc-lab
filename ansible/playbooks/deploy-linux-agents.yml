@@ -1,0 +1,172 @@
+---
+# Deploy Wazuh agents on Linux systems (Ubuntu and RHEL)
+
+- name: Deploy Wazuh Agents on Linux Systems
+  hosts: linux_agents
+  become: true
+  gather_facts: true
+
+  vars:
+    wazuh_repo_key_url: "https://packages.wazuh.com/key/GPG-KEY-WAZUH"
+    wazuh_repo_url_deb: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+    wazuh_repo_url_rpm: "https://packages.wazuh.com/4.x/yum/"
+
+  tasks:
+    - name: Display target system information
+      debug:
+        msg: |
+          Deploying Wazuh agent on: {{ inventory_hostname }}
+          OS Family: {{ ansible_os_family }}
+          IP Address: {{ ansible_default_ipv4.address }}
+          Agent Name: {{ wazuh_agent_name }}
+          Agent Groups: {{ wazuh_agent_groups | join(', ') }}
+
+    # Ubuntu/Debian systems
+    - block:
+        - name: Add Wazuh repository key (Debian/Ubuntu)
+          apt_key:
+            url: "{{ wazuh_repo_key_url }}"
+            state: present
+
+        - name: Add Wazuh repository (Debian/Ubuntu)
+          apt_repository:
+            repo: "{{ wazuh_repo_url_deb }}"
+            state: present
+            update_cache: true
+
+        - name: Install Wazuh agent (Debian/Ubuntu)
+          apt:
+            name: "wazuh-agent={{ wazuh_agent.version }}-*"
+            state: present
+            update_cache: true
+
+      when: ansible_os_family == "Debian"
+
+    # RHEL/CentOS systems
+    - block:
+        - name: Import Wazuh GPG key (RHEL/CentOS)
+          rpm_key:
+            key: "{{ wazuh_repo_key_url }}"
+            state: present
+
+        - name: Add Wazuh repository (RHEL/CentOS)
+          yum_repository:
+            name: wazuh
+            description: Wazuh repository
+            baseurl: "{{ wazuh_repo_url_rpm }}"
+            gpgcheck: true
+            gpgkey: "{{ wazuh_repo_key_url }}"
+            enabled: true
+
+        - name: Install Wazuh agent (RHEL/CentOS)
+          yum:
+            name: "wazuh-agent-{{ wazuh_agent.version }}"
+            state: present
+
+      when: ansible_os_family == "RedHat"
+
+    - name: Configure Wazuh agent
+      template:
+        src: "../configs/wazuh/ossec-agent-linux.conf.j2"
+        dest: "{{ wazuh_agent_linux.config_file }}"
+        owner: root
+        group: ossec
+        mode: "0640"
+        backup: true
+      notify: restart wazuh agent
+
+    - name: Register agent with manager
+      shell: |
+        /var/ossec/bin/agent-auth -m {{ wazuh_manager_ip }} -P {{ wazuh_agent_auth_password }} -G {{ wazuh_agent_groups | join(',') }} -A {{ wazuh_agent_name }}
+      args:
+        creates: /var/ossec/etc/client.keys
+      register: agent_registration
+
+    - name: Display registration result
+      debug:
+        var: agent_registration.stdout_lines
+      when: agent_registration.changed
+
+    - name: Enable and start Wazuh agent service
+      systemd:
+        name: wazuh-agent
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Configure log rotation for Wazuh logs
+      template:
+        src: "../configs/system/wazuh-logrotate.j2"
+        dest: /etc/logrotate.d/wazuh-agent
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure firewall rules for Wazuh agent
+      ufw:
+        rule: allow
+        direction: out
+        to_port: "{{ item.port }}"
+        proto: "{{ item.protocol }}"
+        to_ip: "{{ item.destination }}"
+        comment: "{{ item.comment }}"
+      loop: "{{ firewall_rules }}"
+      when: ansible_os_family == "Debian"
+
+    - name: Configure firewall rules for Wazuh agent (RHEL)
+      firewalld:
+        rich_rule: "rule family=ipv4 destination address={{ item.destination }} port port={{ item.port }} protocol={{ item.protocol }} accept"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ firewall_rules }}"
+      when: ansible_os_family == "RedHat"
+
+    # Web server specific configuration
+    - name: Configure Apache log monitoring (Ubuntu Web Server)
+      blockinfile:
+        path: "{{ wazuh_agent_linux.config_file }}"
+        marker: "<!-- {mark} APACHE LOG MONITORING -->"
+        block: |
+          <localfile>
+            <log_format>apache</log_format>
+            <location>/var/log/apache2/access.log</location>
+          </localfile>
+          <localfile>
+            <log_format>apache</log_format>
+            <location>/var/log/apache2/error.log</location>
+          </localfile>
+      when: "'web' in wazuh_agent_groups"
+      notify: restart wazuh agent
+
+    # Database server specific configuration
+    - name: Configure MySQL log monitoring (RHEL Database)
+      blockinfile:
+        path: "{{ wazuh_agent_linux.config_file }}"
+        marker: "<!-- {mark} MYSQL LOG MONITORING -->"
+        block: |
+          <localfile>
+            <log_format>mysql_log</log_format>
+            <location>/var/log/mysqld.log</location>
+          </localfile>
+          <localfile>
+            <log_format>syslog</log_format>
+            <location>/var/log/mysql/error.log</location>
+          </localfile>
+      when: "'database' in wazuh_agent_groups"
+      notify: restart wazuh agent
+
+    - name: Verify agent status
+      command: /var/ossec/bin/wazuh-control status
+      register: agent_status
+      changed_when: false
+
+    - name: Display agent status
+      debug:
+        var: agent_status.stdout_lines
+
+  handlers:
+    - name: restart wazuh agent
+      systemd:
+        name: wazuh-agent
+        state: restarted
