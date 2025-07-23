@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Wazuh SOC Lab Health Monitoring Script
-# This script monitors the health and status of all lab components
+# Enhanced Wazuh SOC Lab Health Monitoring Script
+# This script monitors the health and status of all lab components with Wazuh-specific checks
 # Compatible with Ubuntu 22.04
 #
 # Usage: ./monitor-lab-health.sh [--continuous] [--interval seconds]
@@ -12,9 +12,9 @@ set -euo pipefail
 # Configuration
 CONTINUOUS_MODE=false
 CHECK_INTERVAL=60
-ALERT_THRESHOLD_CPU=80
-ALERT_THRESHOLD_MEMORY=85
-ALERT_THRESHOLD_DISK=90
+ALERT_THRESHOLD_CPU=85
+ALERT_THRESHOLD_MEMORY=90
+ALERT_THRESHOLD_DISK=95
 LOG_FILE="/var/log/lab-health-monitor.log"
 
 # Lab component IPs
@@ -189,7 +189,7 @@ check_agent_connectivity() {
     
     # Get agent status from manager
     local agent_status
-    agent_status=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$WAZUH_MANAGER" "/var/ossec/bin/wazuh-control status" 2>/dev/null || echo "ERROR")
+    agent_status=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$WAZUH_MANAGER" "/var/ossec/bin/agent_control -l" 2>/dev/null || echo "ERROR")
     
     if [[ "$agent_status" == "ERROR" ]]; then
         log_status "CRITICAL" "Cannot retrieve agent status from manager"
@@ -205,13 +205,10 @@ check_agent_connectivity() {
         
         if ping -c 1 -W 3 "$ip" >/dev/null 2>&1; then
             # Check if agent is reporting
-            local agent_check
-            agent_check=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$WAZUH_MANAGER" "/var/ossec/bin/manage_agents -l | grep -i $name" 2>/dev/null || echo "")
-            
-            if [[ -n "$agent_check" ]]; then
-                log_status "OK" "Agent $name ($ip) is registered and reachable"
+            if echo "$agent_status" | grep -q "$name" | grep -q "Active"; then
+                log_status "OK" "Agent $name ($ip) is active and reporting"
             else
-                log_status "WARNING" "Agent $name ($ip) is reachable but not properly registered"
+                log_status "WARNING" "Agent $name ($ip) is not reporting as active"
             fi
         else
             log_status "CRITICAL" "Agent $name ($ip) is unreachable"
@@ -280,16 +277,6 @@ check_system_resources() {
             fi
         else
             log_status "WARNING" "$name Disk usage: Unable to retrieve"
-        fi
-        
-        # Load average
-        local load_avg
-        load_avg=$(ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$ip" "uptime | awk -F'load average:' '{print \$2}' | cut -d',' -f1 | xargs" 2>/dev/null || echo "N/A")
-        
-        if [[ "$load_avg" != "N/A" ]]; then
-            log_status "OK" "$name Load average: $load_avg"
-        else
-            log_status "WARNING" "$name Load average: Unable to retrieve"
         fi
     done
 }
@@ -394,9 +381,9 @@ generate_health_summary() {
     
     # Count status types from log
     local ok_count warning_count critical_count
-    ok_count=$(grep -c "OK -" "$LOG_FILE" | tail -1 || echo "0")
-    warning_count=$(grep -c "WARNING -" "$LOG_FILE" | tail -1 || echo "0")
-    critical_count=$(grep -c "CRITICAL -" "$LOG_FILE" | tail -1 || echo "0")
+    ok_count=$(grep -c "OK" "$LOG_FILE" | tail -1 || echo "0")
+    warning_count=$(grep -c "WARNING" "$LOG_FILE" | tail -1 || echo "0")
+    critical_count=$(grep -c "CRITICAL" "$LOG_FILE" | tail -1 || echo "0")
     
     echo "Status Summary:"
     echo "✓ OK: $ok_count"

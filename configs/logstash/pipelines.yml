@@ -1,0 +1,6 @@
+- pipeline.id: wazuh-alerts
+  path.config: "/etc/logstash/conf.d/01-wazuh-alerts.conf"
+- pipeline.id: filebeat-logs
+  path.config: "/etc/logstash/conf.d/02-filebeat-logs.conf"
+- pipeline.id: syslog-inputs
+  path.config: "/etc/logstash/conf.d/03-syslog-inputs.conf"

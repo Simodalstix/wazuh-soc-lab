@@ -1,0 +1,66 @@
+{
+  "wazuh-lab-policy": {
+    "policy": {
+      "phases": {
+        "hot": {
+          "min_age": "0ms",
+          "actions": {
+            "rollover": {
+              "max_size": "1gb",
+              "max_age": "1d"
+            }
+          }
+        },
+        "warm": {
+          "min_age": "7d",
+          "actions": {
+            "allocate": {
+              "number_of_replicas": 0
+            },
+            "forcemerge": {
+              "max_num_segments": 1
+            }
+          }
+        },
+        "delete": {
+          "min_age": "30d",
+          "actions": {
+            "delete": {}
+          }
+        }
+      }
+    }
+  },
+  "filebeat-lab-policy": {
+    "policy": {
+      "phases": {
+        "hot": {
+          "min_age": "0ms",
+          "actions": {
+            "rollover": {
+              "max_size": "500mb",
+              "max_age": "1d"
+            }
+          }
+        },
+        "warm": {
+          "min_age": "3d",
+          "actions": {
+            "allocate": {
+              "number_of_replicas": 0
+            },
+            "forcemerge": {
+              "max_num_segments": 1
+            }
+          }
+        },
+        "delete": {
+          "min_age": "7d",
+          "actions": {
+            "delete": {}
+          }
+        }
+      }
+    }
+  }
+}

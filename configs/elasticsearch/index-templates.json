@@ -1,0 +1,85 @@
+{
+  "wazuh-alerts": {
+    "order": 0,
+    "index_patterns": ["wazuh-alerts-4.x-*"],
+    "settings": {
+      "index": {
+        "number_of_shards": "1",
+        "number_of_replicas": "0",
+        "codec": "best_compression",
+        "refresh_interval": "30s",
+        "mapping": {
+          "total_fields": {
+            "limit": "2000"
+          }
+        }
+      }
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "agent": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            },
+            "ip": {
+              "type": "ip"
+            }
+          }
+        },
+        "rule": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "level": {
+              "type": "integer"
+            },
+            "description": {
+              "type": "text"
+            }
+          }
+        }
+      }
+    }
+  },
+  "filebeat": {
+    "order": 1,
+    "index_patterns": ["filebeat-*"],
+    "settings": {
+      "index": {
+        "number_of_shards": "1",
+        "number_of_replicas": "0",
+        "codec": "best_compression",
+        "refresh_interval": "30s"
+      }
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "host": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "log": {
+          "properties": {
+            "level": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    }
+  }
+}
