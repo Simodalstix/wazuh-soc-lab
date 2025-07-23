@@ -1,0 +1,342 @@
+---
+# Wazuh Manager VM Provisioning Playbook
+# Configures the central SIEM platform with Wazuh Manager + ELK Stack
+# Target: Ubuntu 24.04 LTS (192.168.1.10)
+
+- name: Configure Wazuh Manager VM
+  hosts: wazuh_managers
+  become: yes
+  gather_facts: yes
+  vars:
+    wazuh_version: "4.7.0"
+    elasticsearch_version: "7.17.9"
+    kibana_version: "7.17.9"
+    filebeat_version: "7.17.9"
+
+  pre_tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - gnupg2
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - lsb-release
+          - unzip
+          - tar
+          - htop
+          - vim
+          - net-tools
+          - ufw
+        state: present
+
+  tasks:
+    # System Configuration
+    - name: Configure system limits for ELK
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "* soft nofile 65536"
+        - "* hard nofile 65536"
+        - "* soft memlock unlimited"
+        - "* hard memlock unlimited"
+
+    - name: Configure sysctl for ELK optimization
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: "vm.max_map_count", value: "262144" }
+        - { name: "vm.swappiness", value: "1" }
+        - { name: "net.core.rmem_default", value: "262144" }
+        - { name: "net.core.rmem_max", value: "16777216" }
+        - { name: "net.core.wmem_default", value: "262144" }
+        - { name: "net.core.wmem_max", value: "16777216" }
+
+    # Network Configuration
+    - name: Configure static network interface
+      template:
+        src: "{{ playbook_dir }}/../../configs/vm-templates/netplan-static.yaml.j2"
+        dest: /etc/netplan/01-netcfg.yaml
+        backup: yes
+      vars:
+        interface_name: enp0s8
+        ip_address: "{{ ansible_host }}"
+        netmask: "255.255.255.0"
+        gateway: "192.168.1.1"
+        dns_servers:
+          - "192.168.3.10"
+          - "8.8.8.8"
+      notify: apply netplan
+
+    # Security Hardening
+    - name: Configure UFW firewall
+      ufw:
+        rule: "{{ item.rule }}"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto | default('tcp') }}"
+        src: "{{ item.src | default('any') }}"
+        comment: "{{ item.comment }}"
+      loop:
+        - { rule: "allow", port: "22", comment: "SSH" }
+        - { rule: "allow", port: "443", comment: "Wazuh Dashboard HTTPS" }
+        - { rule: "allow", port: "55000", comment: "Wazuh API" }
+        - { rule: "allow", port: "1514", comment: "Wazuh Agent Communication" }
+        - { rule: "allow", port: "1515", comment: "Wazuh Agent Registration" }
+        - { rule: "allow", port: "1516", comment: "Wazuh Cluster" }
+        - { rule: "allow", port: "514", proto: "udp", comment: "Syslog" }
+        - {
+            rule: "allow",
+            port: "9200",
+            src: "192.168.1.0/24",
+            comment: "Elasticsearch",
+          }
+        - {
+            rule: "allow",
+            port: "5601",
+            src: "192.168.1.0/24",
+            comment: "Kibana",
+          }
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    # Wazuh Repository Setup
+    - name: Add Wazuh GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    # Elasticsearch Installation
+    - name: Add Elasticsearch GPG key
+      apt_key:
+        url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+        state: present
+
+    - name: Add Elasticsearch repository
+      apt_repository:
+        repo: "deb https://artifacts.elastic.co/packages/7.x/apt stable main"
+        state: present
+        filename: elastic-7.x
+
+    - name: Install Elasticsearch
+      apt:
+        name: "elasticsearch={{ elasticsearch_version }}"
+        state: present
+        update_cache: yes
+
+    - name: Configure Elasticsearch
+      template:
+        src: "{{ playbook_dir }}/../../configs/elasticsearch/elasticsearch.yml.j2"
+        dest: /etc/elasticsearch/elasticsearch.yml
+        backup: yes
+      notify: restart elasticsearch
+
+    - name: Configure Elasticsearch JVM options
+      template:
+        src: "{{ playbook_dir }}/../../configs/elasticsearch/jvm.options.j2"
+        dest: /etc/elasticsearch/jvm.options
+        backup: yes
+      notify: restart elasticsearch
+
+    # Wazuh Indexer Installation (Alternative to Elasticsearch)
+    - name: Install Wazuh Indexer
+      apt:
+        name: wazuh-indexer
+        state: present
+        update_cache: yes
+
+    - name: Configure Wazuh Indexer
+      template:
+        src: "{{ playbook_dir }}/../../configs/wazuh/wazuh-indexer.yml.j2"
+        dest: /etc/wazuh-indexer/opensearch.yml
+        backup: yes
+      notify: restart wazuh-indexer
+
+    # Wazuh Manager Installation
+    - name: Install Wazuh Manager
+      apt:
+        name: wazuh-manager
+        state: present
+
+    - name: Configure Wazuh Manager
+      template:
+        src: "{{ playbook_dir }}/../../configs/wazuh/ossec-manager.conf.j2"
+        dest: /var/ossec/etc/ossec.conf
+        backup: yes
+      notify: restart wazuh-manager
+
+    # Filebeat Installation
+    - name: Install Filebeat
+      apt:
+        name: "filebeat={{ filebeat_version }}"
+        state: present
+
+    - name: Configure Filebeat for Wazuh
+      template:
+        src: "{{ playbook_dir }}/../../configs/filebeat/filebeat-wazuh.yml.j2"
+        dest: /etc/filebeat/filebeat.yml
+        backup: yes
+      notify: restart filebeat
+
+    # Wazuh Dashboard Installation
+    - name: Install Wazuh Dashboard
+      apt:
+        name: wazuh-dashboard
+        state: present
+
+    - name: Configure Wazuh Dashboard
+      template:
+        src: "{{ playbook_dir }}/../../configs/wazuh/wazuh-dashboard.yml.j2"
+        dest: /etc/wazuh-dashboard/opensearch_dashboards.yml
+        backup: yes
+      notify: restart wazuh-dashboard
+
+    # SSL Certificate Generation
+    - name: Create SSL certificate directory
+      file:
+        path: /etc/wazuh-certs
+        state: directory
+        mode: "0755"
+
+    - name: Generate SSL certificates for Wazuh
+      shell: |
+        cd /etc/wazuh-certs
+        curl -sO https://packages.wazuh.com/4.7/wazuh-certs-tool.sh
+        curl -sO https://packages.wazuh.com/4.7/config.yml
+        bash wazuh-certs-tool.sh -A
+      args:
+        creates: /etc/wazuh-certs/wazuh-certificates.tar
+
+    # Service Management
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop:
+        - wazuh-indexer
+        - wazuh-manager
+        - filebeat
+        - wazuh-dashboard
+
+    # Post-Installation Configuration
+    - name: Wait for Wazuh services to be ready
+      wait_for:
+        port: "{{ item }}"
+        host: "{{ ansible_host }}"
+        timeout: 300
+      loop:
+        - 9200 # Wazuh Indexer
+        - 55000 # Wazuh API
+        - 443 # Wazuh Dashboard
+
+    - name: Create Wazuh API user
+      uri:
+        url: "https://{{ ansible_host }}:55000/security/users"
+        method: POST
+        user: admin
+        password: admin
+        force_basic_auth: yes
+        validate_certs: no
+        body_format: json
+        body:
+          username: "wazuh-api"
+          password: "{{ vault_wazuh_api_password | default('WazuhAPI123!') }}"
+        status_code: [200, 201, 409]
+
+    # Backup Configuration
+    - name: Create backup directory
+      file:
+        path: /opt/wazuh-backups
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install backup script
+      template:
+        src: "{{ playbook_dir }}/../../scripts/backup/backup-wazuh-config.sh"
+        dest: /opt/wazuh-backups/backup-wazuh-config.sh
+        mode: "0755"
+
+    - name: Schedule daily backups
+      cron:
+        name: "Wazuh configuration backup"
+        minute: "0"
+        hour: "2"
+        job: "/opt/wazuh-backups/backup-wazuh-config.sh"
+        user: root
+
+  handlers:
+    - name: apply netplan
+      command: netplan apply
+
+    - name: restart elasticsearch
+      systemd:
+        name: elasticsearch
+        state: restarted
+
+    - name: restart wazuh-indexer
+      systemd:
+        name: wazuh-indexer
+        state: restarted
+
+    - name: restart wazuh-manager
+      systemd:
+        name: wazuh-manager
+        state: restarted
+
+    - name: restart filebeat
+      systemd:
+        name: filebeat
+        state: restarted
+
+    - name: restart wazuh-dashboard
+      systemd:
+        name: wazuh-dashboard
+        state: restarted
+
+  post_tasks:
+    - name: Display Wazuh Manager information
+      debug:
+        msg:
+          - "Wazuh Manager installation completed successfully!"
+          - "Dashboard URL: https://{{ ansible_host }}"
+          - "API URL: https://{{ ansible_host }}:55000"
+          - "Default credentials: admin/admin (change immediately)"
+          - "Agent registration port: 1515"
+          - "Agent communication port: 1514"
+          - "Check service status: systemctl status wazuh-manager wazuh-indexer wazuh-dashboard"
+
+    - name: Verify Wazuh services
+      command: systemctl is-active {{ item }}
+      register: service_status
+      loop:
+        - wazuh-manager
+        - wazuh-indexer
+        - wazuh-dashboard
+        - filebeat
+      failed_when: service_status.stdout != "active"

@@ -1,0 +1,437 @@
+---
+# RHEL 9 Database Server VM Provisioning Playbook
+# Configures MySQL database server + Wazuh Agent
+# Target: RHEL 9.5 (192.168.3.20) - Internal Network
+
+- name: Configure RHEL 9 Database Server VM
+  hosts: rhel-db
+  become: yes
+  gather_facts: yes
+  vars:
+    mysql_root_password: "{{ vault_mysql_root_password | default('RootPassword123!') }}"
+    mysql_wazuh_password: "{{ vault_mysql_wazuh_password | default('WazuhDB123!') }}"
+    mysql_app_password: "{{ vault_mysql_app_password | default('AppDB123!') }}"
+
+  pre_tasks:
+    - name: Update system packages
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: Install essential packages
+      dnf:
+        name:
+          - curl
+          - wget
+          - vim
+          - htop
+          - net-tools
+          - bind-utils
+          - firewalld
+          - policycoreutils-python-utils
+          - selinux-policy-targeted
+          - tar
+          - unzip
+        state: present
+
+  tasks:
+    # Network Configuration
+    - name: Configure static network interface
+      template:
+        src: "{{ playbook_dir }}/../../configs/vm-templates/rhel-network.j2"
+        dest: /etc/NetworkManager/system-connections/enp0s8.nmconnection
+        mode: "0600"
+      vars:
+        interface_name: enp0s8
+        ip_address: "{{ ansible_host }}"
+        netmask: "255.255.255.0"
+        gateway: "192.168.3.1"
+        dns_servers:
+          - "192.168.3.10"
+          - "8.8.8.8"
+      notify: restart networkmanager
+
+    - name: Add static routes
+      nmcli:
+        conn_name: enp0s8
+        type: ethernet
+        routes4:
+          - "192.168.1.0/24 192.168.3.1"
+          - "192.168.2.0/24 192.168.3.1"
+        state: present
+      notify: restart networkmanager
+
+    # SELinux Configuration
+    - name: Set SELinux to permissive for lab environment
+      selinux:
+        policy: targeted
+        state: permissive
+
+    - name: Configure SELinux booleans for MySQL
+      seboolean:
+        name: "{{ item }}"
+        state: yes
+        persistent: yes
+      loop:
+        - mysql_connect_any
+        - httpd_can_network_connect_db
+      ignore_errors: yes
+
+    # Firewall Configuration
+    - name: Start and enable firewalld
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Configure firewall for database services
+      firewalld:
+        service: "{{ item.service | default(omit) }}"
+        port: "{{ item.port | default(omit) }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - { service: "ssh" }
+        - { service: "mysql" }
+        - { port: "1514/tcp" } # Wazuh agent
+        - { port: "3306/tcp" } # MySQL
+      notify: reload firewalld
+
+    - name: Configure firewall zones
+      firewalld:
+        zone: internal
+        source: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "192.168.1.0/24"
+        - "192.168.2.0/24"
+        - "192.168.3.0/24"
+
+    # MySQL Installation and Configuration
+    - name: Install MySQL server
+      dnf:
+        name:
+          - mysql-server
+          - mysql
+          - python3-PyMySQL
+        state: present
+
+    - name: Start and enable MySQL
+      systemd:
+        name: mysqld
+        state: started
+        enabled: yes
+
+    - name: Get MySQL temporary root password
+      shell: grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}' | tail -1
+      register: mysql_temp_password
+      ignore_errors: yes
+
+    - name: Set MySQL root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_password: "{{ mysql_temp_password.stdout if mysql_temp_password.stdout else '' }}"
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        state: present
+      ignore_errors: yes
+
+    - name: Create MySQL configuration file
+      template:
+        src: "{{ playbook_dir }}/../../configs/vm-templates/mysql-client.cnf.j2"
+        dest: /root/.my.cnf
+        mode: "0600"
+      vars:
+        mysql_password: "{{ mysql_root_password }}"
+
+    - name: Configure MySQL server
+      template:
+        src: "{{ playbook_dir }}/../../configs/vm-templates/mysql-server.cnf.j2"
+        dest: /etc/my.cnf.d/server.cnf
+        backup: yes
+      notify: restart mysql
+
+    - name: Remove anonymous MySQL users
+      mysql_user:
+        name: ""
+        host_all: yes
+        state: absent
+
+    - name: Remove MySQL test database
+      mysql_db:
+        name: test
+        state: absent
+
+    - name: Create application databases
+      mysql_db:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - labdb
+        - wazuhdb
+        - appdb
+
+    - name: Create MySQL users for applications
+      mysql_user:
+        name: "{{ item.name }}"
+        password: "{{ item.password }}"
+        priv: "{{ item.priv }}"
+        host: "{{ item.host }}"
+        state: present
+      loop:
+        - {
+            name: "wazuh",
+            password: "{{ mysql_wazuh_password }}",
+            priv: "wazuhdb.*:ALL",
+            host: "192.168.1.%",
+          }
+        - {
+            name: "appuser",
+            password: "{{ mysql_app_password }}",
+            priv: "appdb.*:ALL",
+            host: "192.168.2.%",
+          }
+        - {
+            name: "labuser",
+            password: "{{ mysql_app_password }}",
+            priv: "labdb.*:ALL",
+            host: "192.168.%.%",
+          }
+
+    # Database Monitoring Setup
+    - name: Create database monitoring user
+      mysql_user:
+        name: monitor
+        password: "MonitorPass123!"
+        priv: "*.*:PROCESS,REPLICATION CLIENT,SELECT"
+        host: "192.168.1.10"
+        state: present
+
+    - name: Create sample data for testing
+      mysql_db:
+        name: labdb
+        state: import
+        target: "{{ playbook_dir }}/../../configs/vm-templates/sample-data.sql"
+      ignore_errors: yes
+
+    # Log Configuration
+    - name: Configure MySQL logging
+      lineinfile:
+        path: /etc/my.cnf.d/server.cnf
+        line: "{{ item }}"
+        insertafter: "\\[mysqld\\]"
+      loop:
+        - "log-error=/var/log/mysqld.log"
+        - "slow_query_log=1"
+        - "slow_query_log_file=/var/log/mysql-slow.log"
+        - "long_query_time=2"
+        - "log_queries_not_using_indexes=1"
+        - "general_log=1"
+        - "general_log_file=/var/log/mysql-general.log"
+      notify: restart mysql
+
+    # Wazuh Agent Installation
+    - name: Add Wazuh GPG key
+      rpm_key:
+        key: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh repository
+      yum_repository:
+        name: wazuh
+        description: Wazuh repository
+        baseurl: https://packages.wazuh.com/4.x/yum/
+        gpgcheck: yes
+        gpgkey: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        enabled: yes
+
+    - name: Install Wazuh agent
+      dnf:
+        name: wazuh-agent
+        state: present
+        update_cache: yes
+
+    - name: Configure Wazuh agent
+      template:
+        src: "{{ playbook_dir }}/../../configs/wazuh/ossec-agent-linux.conf.j2"
+        dest: /var/ossec/etc/ossec.conf
+        backup: yes
+      vars:
+        wazuh_manager_ip: "{{ wazuh_manager_ip }}"
+        agent_name: "{{ wazuh_agent_name }}"
+        agent_groups: "{{ wazuh_agent_groups | join(',') }}"
+      notify: restart wazuh-agent
+
+    - name: Register Wazuh agent
+      command: /var/ossec/bin/agent-auth -m {{ wazuh_manager_ip }} -A {{ wazuh_agent_name }}
+      args:
+        creates: /var/ossec/etc/client.keys
+
+    # Database Log Monitoring Configuration
+    - name: Configure MySQL log monitoring in Wazuh
+      blockinfile:
+        path: /var/ossec/etc/ossec.conf
+        marker: "<!-- {mark} MYSQL LOG MONITORING -->"
+        insertbefore: "</ossec_config>"
+        block: |
+          <localfile>
+            <log_format>mysql_log</log_format>
+            <location>/var/log/mysqld.log</location>
+          </localfile>
+          <localfile>
+            <log_format>mysql_log</log_format>
+            <location>/var/log/mysql-slow.log</location>
+          </localfile>
+          <localfile>
+            <log_format>syslog</log_format>
+            <location>/var/log/mysql-general.log</location>
+          </localfile>
+      notify: restart wazuh-agent
+
+    # File Integrity Monitoring
+    - name: Configure FIM for database directories
+      blockinfile:
+        path: /var/ossec/etc/ossec.conf
+        marker: "<!-- {mark} DATABASE FIM MONITORING -->"
+        insertbefore: "</ossec_config>"
+        block: |
+          <syscheck>
+            <directories realtime="yes" check_all="yes">/etc/my.cnf.d</directories>
+            <directories check_all="yes">/var/lib/mysql</directories>
+            <directories check_all="yes">/etc/mysql</directories>
+            <ignore>/var/lib/mysql/ib_logfile</ignore>
+            <ignore>/var/lib/mysql/ibdata</ignore>
+            <ignore>/var/lib/mysql/*.pid</ignore>
+          </syscheck>
+      notify: restart wazuh-agent
+
+    # System Hardening
+    - name: Configure system limits
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "mysql soft nofile 65536"
+        - "mysql hard nofile 65536"
+        - "mysql soft nproc 32768"
+        - "mysql hard nproc 32768"
+
+    - name: Configure sysctl for database optimization
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: "vm.swappiness", value: "10" }
+        - { name: "net.core.rmem_default", value: "262144" }
+        - { name: "net.core.rmem_max", value: "16777216" }
+        - { name: "net.core.wmem_default", value: "262144" }
+        - { name: "net.core.wmem_max", value: "16777216" }
+
+    # Backup Configuration
+    - name: Create database backup directory
+      file:
+        path: /opt/db-backups
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0755"
+
+    - name: Install database backup script
+      template:
+        src: "{{ playbook_dir }}/../../configs/vm-templates/mysql-backup.sh.j2"
+        dest: /opt/db-backups/mysql-backup.sh
+        mode: "0755"
+        owner: mysql
+        group: mysql
+      vars:
+        mysql_password: "{{ mysql_root_password }}"
+
+    - name: Schedule database backups
+      cron:
+        name: "MySQL database backup"
+        minute: "0"
+        hour: "3"
+        job: "/opt/db-backups/mysql-backup.sh"
+        user: mysql
+
+    # Service Management
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop:
+        - mysqld
+        - wazuh-agent
+
+  handlers:
+    - name: restart networkmanager
+      systemd:
+        name: NetworkManager
+        state: restarted
+
+    - name: reload firewalld
+      command: firewall-cmd --reload
+
+    - name: restart mysql
+      systemd:
+        name: mysqld
+        state: restarted
+
+    - name: restart wazuh-agent
+      systemd:
+        name: wazuh-agent
+        state: restarted
+
+  post_tasks:
+    - name: Wait for MySQL to be ready
+      wait_for:
+        port: 3306
+        host: "{{ ansible_host }}"
+        timeout: 60
+
+    - name: Test database connectivity
+      mysql_db:
+        name: mysql
+        state: present
+      register: db_test
+
+    - name: Display RHEL Database Server information
+      debug:
+        msg:
+          - "RHEL 9 Database Server installation completed successfully!"
+          - "MySQL Server: {{ ansible_host }}:3306"
+          - "Root password: {{ mysql_root_password }}"
+          - "Application databases: labdb, wazuhdb, appdb"
+          - "Wazuh user: wazuh/{{ mysql_wazuh_password }}"
+          - "App user: appuser/{{ mysql_app_password }}"
+          - "Lab user: labuser/{{ mysql_app_password }}"
+          - "Wazuh agent registered with manager: {{ wazuh_manager_ip }}"
+          - "Backup location: /opt/db-backups"
+          - "Log files: /var/log/mysqld.log, /var/log/mysql-slow.log"
+
+    - name: Verify services
+      command: systemctl is-active {{ item }}
+      register: service_status
+      loop:
+        - mysqld
+        - wazuh-agent
+        - firewalld
+      failed_when: service_status.stdout != "active"
+
+    - name: Display database status
+      mysql_info:
+        filter: version
+      register: mysql_info
+
+    - name: Show MySQL version
+      debug:
+        msg: "MySQL Version: {{ mysql_info.version.full }}"
