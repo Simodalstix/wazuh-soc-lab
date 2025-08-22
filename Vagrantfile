@@ -39,7 +39,7 @@ Vagrant.configure("2") do |config|
       vb.gui = true  # Enable GUI for initial setup
       
       # Attach pfSense ISO for installation
-      vb.customize ["storageattach", :id, "--storagectl", "IDE Controller", "--port", "0", "--device", "1", "--type", "dvddrive", "--medium", "~/ISOs/pfsense-CE-2.7.2-RELEASE-amd64.iso"]
+      vb.customize ["storageattach", :id, "--storagectl", "IDE Controller", "--port", "0", "--device", "1", "--type", "dvddrive", "--medium", "C:/Users/Simoda/wazuh-soc-lab/ISOs/pfsense-CE-2.7.2-RELEASE-amd64.iso"]
       
       # Enable promiscuous mode for all interfaces
       vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]

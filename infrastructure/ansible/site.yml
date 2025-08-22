@@ -1,0 +1,32 @@
+---
+# Main playbook for SOC Lab deployment
+- name: Deploy Wazuh Manager and ELK Stack
+  hosts: wazuh_manager
+  become: yes
+  roles:
+    - wazuh-manager
+    - elasticsearch
+    - kibana
+    - logstash
+
+- name: Configure Ubuntu Web Server
+  hosts: ubuntu_web
+  become: yes
+  roles:
+    - apache-dvwa
+    - wazuh-agent
+
+- name: Configure Rocky Linux Database Server
+  hosts: rocky_db
+  become: yes
+  roles:
+    - mysql-server
+    - wazuh-agent
+
+- name: Configure Windows Domain Controller
+  hosts: windows_dc
+  become: yes
+  roles:
+    - active-directory
+    - wazuh-agent-windows
+  when: inventory_hostname in groups['windows_dc']
