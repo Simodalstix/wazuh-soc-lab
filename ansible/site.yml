@@ -1,0 +1,39 @@
+---
+- hosts: wazuh
+  become: yes
+  tasks:
+    - name: Install Wazuh Manager
+      shell: |
+        curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
+        bash ./wazuh-install.sh -a
+
+- hosts: web
+  become: yes
+  tasks:
+    - name: Install Apache and DVWA
+      apt:
+        name: [apache2, php, php-mysql, git]
+        state: present
+    
+    - name: Clone DVWA
+      git:
+        repo: https://github.com/digininja/DVWA.git
+        dest: /var/www/html/dvwa
+    
+    - name: Install Wazuh Agent
+      shell: |
+        curl -so wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.7.2-1_amd64.deb
+        WAZUH_MANAGER='192.168.56.10' dpkg -i ./wazuh-agent.deb
+
+- hosts: db
+  become: yes
+  tasks:
+    - name: Install MySQL
+      dnf:
+        name: [mysql-server]
+        state: present
+    
+    - name: Install Wazuh Agent
+      shell: |
+        curl -so wazuh-agent.rpm https://packages.wazuh.com/4.x/yum/wazuh-agent-4.7.2-1.x86_64.rpm
+        WAZUH_MANAGER='192.168.56.10' rpm -ihv wazuh-agent.rpm
